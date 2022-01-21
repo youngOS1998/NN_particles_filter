@@ -5,14 +5,14 @@ import random
 import math
 
 class create_training_data():
-    def __init__(self) -> None:
-        self.points_num = 100
+    def __init__(self, flag=True) -> None:
+        self.points_num = 1000
         self.size = (20,35)
         self.picture = 'map1.png'
         self.map = self.get_map()
         # self.columns_name = {'x', 'y', 'dist_up', 'dist_right', 'dist_bottom', 'dist_left', 'dist_around'}
         # self.data_Frame = pd.DataFrame(columns=self.columns_name)
-
+        self.Flag = flag
 
     def get_map(self):
         gray_1 = cv2.imread(self.picture, cv2.IMREAD_GRAYSCALE)
@@ -67,7 +67,8 @@ class create_training_data():
             point_center_y = random.randint(0, n-1)   # 产生中心点的列
             
             # 我们让随机点到中心点的距离的反比 (1/distance) 成为这个点的真实权重，即训练时的label
-            for j in range(100):              # 围绕这个中心点在整个地图中产生100个随机点
+            for j in range(1000):              
+                # 围绕这个中心点在整个地图中产生100个随机点
                 data_single_x = random.randint(0, m-1)
                 data_single_y = random.randint(0, n-1)
                 if self.map[data_single_x][data_single_y] != 0:

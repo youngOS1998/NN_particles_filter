@@ -6,6 +6,7 @@ from matplotlib import cm
 import pandas as pd
 import torch 
 import torch.nn as nn
+import snnflow
 
 
 class ExampleDataset(torch.utils.data.Dataset):
@@ -14,7 +15,7 @@ class ExampleDataset(torch.utils.data.Dataset):
         self.picture = 'map1.png'
         self.size = (20, 35)
 
-        self.data = self._get_training_data()   # 数据是（len_data，707）
+        self.data = self._get_training_data()   # 数据是（len_data，7）
 
     def __getitem__(self,idx): 
         return self.data[idx]
@@ -44,7 +45,18 @@ class ExampleDataset(torch.utils.data.Dataset):
         # R    = gray
         # surf = ax.plot_surface(X, Y, R, cmap=cm.coolwarm, linewidth=0, antialiased=False)
         # plt.show()
-        return gray     # gray.shape = (35, 20)  即35行，20列
+        return gray                                         # gray.shape = (35, 20)  即35行，20列
+
+    def maxminnorm(self, array):                            # 用于做归一化，到0~1之间
+        maxcols=array.max(axis=0)
+        mincols=array.min(axis=0)
+        data_shape = array.shape
+        data_rows = data_shape[0]
+        data_cols = data_shape[1]
+        t=np.empty((data_rows,data_cols))
+        for i in range(data_cols):
+            t[:,i]=(array[:,i]-mincols[i])/(maxcols[i]-mincols[i])
+        return t
         
     def _get_training_data(self):
         raw_data = pd.read_csv(self.path_training_data)     # 此数据格式为：'x', 'y', 'dist_up', 'dist_right', 'dist_bottom', 'dist_left', 'dist_around'
@@ -64,6 +76,7 @@ class ExampleDataset(torch.utils.data.Dataset):
         dist_bottom = dist_bottom[:, np.newaxis]
         dist_left   = dist_left[:, np.newaxis]
         dist_around = dist_around[:, np.newaxis]
+        dist_around = self.maxminnorm(dist_around)
 
         len_data    = len(x)         # 数据的长度
 
@@ -72,12 +85,15 @@ class ExampleDataset(torch.utils.data.Dataset):
         # pic_reshaped = picture_data.reshape((1,-1))
         # pic_reshaped_repeat = np.repeat(pic_reshaped, len_data, axis=0)
         # concate_data = np.concatenate((pic_reshaped_repeat, x, y, dist_up, dist_right, dist_bottom, dist_left, dist_around), axis=1)  # shape = (len_data, 707)
-        concate_data = np.concatenate((x, y, dist_up, dist_right, dist_bottom, dist_left, dist_around), axis=1)
+        concate_data = np.concatenate((x, y, dist_up, dist_right, dist_bottom, dist_left, dist_around), axis=1)   # shape = 7    data = 6  label = 1
         return concate_data
 
 
 
 class NN_particle_filter(nn.Module):
+    """
+    这个类的作用是生成一个ANN网络对周围粒子的重要度进行估计
+    """
 
     def __init__(self, num_classes=1, init_weights=False):
         super(NN_particle_filter, self).__init__()
@@ -89,30 +105,49 @@ class NN_particle_filter(nn.Module):
         #     nn.Linear(4096,   10), nn.ReLU(), nn.Dropout(p=0.5),
         #     nn.Linear(10,      1)
         # )
-        self.Conv = nn.Sequential(                                      # in:  (1, 1, 35, 20)
-            nn.Conv2d(1, 96, kernel_size=(3, 3), stride=1, padding=1),  # out: (1, 96, 35, 20)
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(3, 3), stride=2),                 # out: (1, 96, 18, 10)
-            nn.Conv2d(96, 256, kernel_size=(3, 3), padding=1),          # out: (1, 256,18, 10)
-            nn.MaxPool2d(kernel_size=3, stride=2),                      # out: (1, 256, 8, 4)
-            nn.Flatten(),                                               # out: (8192)
-            nn.Linear(8192, 4096), nn.ReLU(), nn.Dropout(p=0.5),       
-            nn.Linear(4096, 4096), nn.ReLU(), nn.Dropout(p=0.5),
-            nn.Linear(4096, 20)
-        )
 
-        self.post_Linear = nn.Sequential(
-            nn.Linear(27, 64), nn.ReLU(), nn.Dropout(p=0.5),
-            nn.Linear(64, 128), nn.ReLU(), nn.Dropout(p=0.5),
-            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(p=0.5),
-            nn.Linear(64, 1), nn.ReLU(), nn.Dropout(p=0.5),
+
+        # self.Conv = nn.Sequential(                                      # in:  (1, 1, 35, 20)
+        #     nn.Conv2d(1, 96, kernel_size=(3, 3), stride=1, padding=1),  # out: (1, 96, 35, 20)
+        #     nn.ReLU(),
+        #     nn.MaxPool2d(kernel_size=(3, 3), stride=2),                 # out: (1, 96, 18, 10)
+        #     nn.Conv2d(96, 256, kernel_size=(3, 3), padding=1),          # out: (1, 256,18, 10)
+        #     nn.MaxPool2d(kernel_size=3, stride=2),                      # out: (1, 256, 8, 4)
+        #     nn.Flatten(),                                               # out: (8192)
+        #     nn.Linear(8192, 4096), nn.ReLU(), nn.Dropout(p=0.5),       
+        #     nn.Linear(4096, 4096), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(4096, 20)
+        # )
+
+        # self.post_Linear = nn.Sequential(
+        #     nn.Linear(27, 64), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(64, 128), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(128, 64), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(64, 1), nn.ReLU(), nn.Dropout(p=0.5),
+        # )
+
+        # self.net_particles = nn.Sequential(
+        #     nn.Linear(6, 64), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(64, 128), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(128, 128), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(128, 128), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(128, 64), nn.ReLU(), nn.Dropout(p=0.5),
+        #     nn.Linear(64, 1), nn.ReLU(), nn.Dropout(p=0.5),   
+        # )
+        self.net_particles = nn.Sequential(
+            nn.Linear(6, 64), nn.ReLU(),
+            nn.Linear(64, 128), nn.ReLU(),
+            nn.Linear(128, 128), nn.ReLU(),
+            nn.Linear(128, 128), nn.ReLU(),
+            nn.Linear(128, 64), nn.ReLU(),
+            nn.Linear(64, 1)
         )
 
         if init_weights:
             self._initialize_weights()
 
-    def forward(self, image_x, around_x): # around_x是机器人周围粒子的特征
-        temp = self.Conv(image_x)         # 此是从图片中提取出的特征
+    def forward(self, x):                    # around_x是机器人周围粒子的特征
+        return self.net_particles(x)         # 此是从图片中提取出的特征
 
 
     def _initialize_weights(self):
@@ -135,23 +170,23 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     loss_function = nn.MSELoss()
-    optimizer = torch.optim.Adam(network.parameters(), lr=0.0002)
+    optimizer = torch.optim.SGD(network.parameters(), lr=0.002)
 
     kwargs = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
     dataset_1 = ExampleDataset()
-    dataLoader = torch.utils.data.DataLoader(dataset=dataset_1, shuffle=True, batch_size=10)   # 每次送入的数据是10 x 707, 10指的是batch size, 
+    dataLoader = torch.utils.data.DataLoader(dataset=dataset_1, shuffle=True, batch_size=30)   # 每次送入的数据是10 x 707, 10指的是batch size, 
                                                                                                # 707指的是数据的维度
     i = 0
     loss_list = []                                                                                           
     save_path   = './NN_particles_filter.pth'
     beat_acc    = 0.0
 
-    for epoch in range(10):
+    for epoch in range(30):
         network.train()
         running_loss = 0.0
 
         for step, datapoint in enumerate(dataLoader):              # datapoint 的shape是(10, 707)
-            data, label = datapoint[:, 0:706], datapoint[:, 706]
+            data, label = datapoint[:, 0:6], datapoint[:, 6]
             data = data.float()
             label = label.float()
             optimizer.zero_grad()                                  # 清除历史梯度
