@@ -1,3 +1,4 @@
+import heapq
 from random import shuffle
 import numpy as np
 import cv2
@@ -6,88 +7,23 @@ from matplotlib import cm
 import pandas as pd
 import torch 
 import torch.nn as nn
-import snnflow
+from Dataset import ExampleDataset
+import time
 
 
-class ExampleDataset(torch.utils.data.Dataset):
-    def __init__(self):
-        self.path_training_data = './data_particles_training/training_data.csv'
-        self.picture = 'map1.png'
-        self.size = (20, 35)
+class Accumulator:
+    """在n个变量上累加"""
+    def __init__(self, n):
+        self.data = [0.0] * n
+    
+    def add(self, *args):
+        self.data = [a + float(b) for a, b in zip(self.data, args)]
 
-        self.data = self._get_training_data()   # 数据是（len_data，7）
+    def reset(self):
+        self.data = [0.0] * len(self.data)
 
-    def __getitem__(self,idx): 
+    def __getitem__(self, idx):
         return self.data[idx]
-
-    def __len__(self): # What is the length of the dataset
-        return len(self.data)
-
-    def _get_map(self):
-        gray_1 = cv2.imread(self.picture, cv2.IMREAD_GRAYSCALE)
-        print(type(gray_1))
-        # size = (20, 35)  # 20是宽， 35是高
-        gray = cv2.resize(gray_1, dsize=self.size, interpolation=cv2.INTER_AREA)
-        m, n = gray.shape
-        for i in range(m):
-            for j in range(n):
-                if gray[i,j] > 200:
-                    gray[i,j] = 255
-                else:
-                    gray[i,j] = 0
-
-        # print('gray shape is:', gray.shape)
-        # fig  = plt.figure()
-        # ax   = fig.gca(projection='3d')
-        # X    = np.arange(0, gray.shape[1], 1)
-        # Y    = np.arange(0, gray.shape[0], 1)
-        # X, Y = np.meshgrid(X, Y)
-        # R    = gray
-        # surf = ax.plot_surface(X, Y, R, cmap=cm.coolwarm, linewidth=0, antialiased=False)
-        # plt.show()
-        return gray                                         # gray.shape = (35, 20)  即35行，20列
-
-    def maxminnorm(self, array):                            # 用于做归一化，到0~1之间
-        maxcols=array.max(axis=0)
-        mincols=array.min(axis=0)
-        data_shape = array.shape
-        data_rows = data_shape[0]
-        data_cols = data_shape[1]
-        t=np.empty((data_rows,data_cols))
-        for i in range(data_cols):
-            t[:,i]=(array[:,i]-mincols[i])/(maxcols[i]-mincols[i])
-        return t
-        
-    def _get_training_data(self):
-        raw_data = pd.read_csv(self.path_training_data)     # 此数据格式为：'x', 'y', 'dist_up', 'dist_right', 'dist_bottom', 'dist_left', 'dist_around'
-                                                            # 我们要将其(7)和图片(20x35)组合在一起，合成一个数据送入神经网络中
-        x           = np.array(raw_data['x'          ])
-        y           = np.array(raw_data['y'          ])
-        dist_up     = np.array(raw_data['dist_up'    ])
-        dist_right  = np.array(raw_data['dist_right' ])
-        dist_bottom = np.array(raw_data['dist_bottom'])
-        dist_left   = np.array(raw_data['dist_left'  ])
-        dist_around = np.array(raw_data['dist_around'])
-
-        x           = x[:, np.newaxis]                      # shape = len_data x 1
-        y           = y[:, np.newaxis]
-        dist_up     = dist_up[:, np.newaxis]
-        dist_right  = dist_right[:, np.newaxis]
-        dist_bottom = dist_bottom[:, np.newaxis]
-        dist_left   = dist_left[:, np.newaxis]
-        dist_around = dist_around[:, np.newaxis]
-        dist_around = self.maxminnorm(dist_around)
-
-        len_data    = len(x)         # 数据的长度
-
-        # # 接下来传入图片的数据
-        # picture_data = self._get_map()   # (35, 20)
-        # pic_reshaped = picture_data.reshape((1,-1))
-        # pic_reshaped_repeat = np.repeat(pic_reshaped, len_data, axis=0)
-        # concate_data = np.concatenate((pic_reshaped_repeat, x, y, dist_up, dist_right, dist_bottom, dist_left, dist_around), axis=1)  # shape = (len_data, 707)
-        concate_data = np.concatenate((x, y, dist_up, dist_right, dist_bottom, dist_left, dist_around), axis=1)   # shape = 7    data = 6  label = 1
-        return concate_data
-
 
 
 class NN_particle_filter(nn.Module):
@@ -99,43 +35,8 @@ class NN_particle_filter(nn.Module):
         super(NN_particle_filter, self).__init__()
         # define our neuron network below
 
-        # self.net = nn.Sequential(
-        #     nn.Linear(706,  6400), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(6400, 4096), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(4096,   10), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(10,      1)
-        # )
-
-
-        # self.Conv = nn.Sequential(                                      # in:  (1, 1, 35, 20)
-        #     nn.Conv2d(1, 96, kernel_size=(3, 3), stride=1, padding=1),  # out: (1, 96, 35, 20)
-        #     nn.ReLU(),
-        #     nn.MaxPool2d(kernel_size=(3, 3), stride=2),                 # out: (1, 96, 18, 10)
-        #     nn.Conv2d(96, 256, kernel_size=(3, 3), padding=1),          # out: (1, 256,18, 10)
-        #     nn.MaxPool2d(kernel_size=3, stride=2),                      # out: (1, 256, 8, 4)
-        #     nn.Flatten(),                                               # out: (8192)
-        #     nn.Linear(8192, 4096), nn.ReLU(), nn.Dropout(p=0.5),       
-        #     nn.Linear(4096, 4096), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(4096, 20)
-        # )
-
-        # self.post_Linear = nn.Sequential(
-        #     nn.Linear(27, 64), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(64, 128), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(128, 64), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(64, 1), nn.ReLU(), nn.Dropout(p=0.5),
-        # )
-
-        # self.net_particles = nn.Sequential(
-        #     nn.Linear(6, 64), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(64, 128), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(128, 128), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(128, 128), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(128, 64), nn.ReLU(), nn.Dropout(p=0.5),
-        #     nn.Linear(64, 1), nn.ReLU(), nn.Dropout(p=0.5),   
-        # )
         self.net_particles = nn.Sequential(
-            nn.Linear(6, 64), nn.ReLU(),
+            nn.Linear(8, 64), nn.ReLU(),
             nn.Linear(64, 128), nn.ReLU(),
             nn.Linear(128, 128), nn.ReLU(),
             nn.Linear(128, 128), nn.ReLU(),
@@ -147,10 +48,16 @@ class NN_particle_filter(nn.Module):
             self._initialize_weights()
 
     def forward(self, x):                    # around_x是机器人周围粒子的特征
+        """前向传播"""
         return self.net_particles(x)         # 此是从图片中提取出的特征
+    
+    def loss_eval(self):
+        """在测试时得到的"""
+        pass
 
 
     def _initialize_weights(self):
+        """给网络层赋予初始权重和偏差"""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):   # 若是卷积层
                 nn.init.normal_(m.weight, mean=0, std=1)
@@ -161,36 +68,60 @@ class NN_particle_filter(nn.Module):
             elif isinstance(m, nn.Linear): # 若是全连接层
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.constant_(m.bias, 0) 
+    
+
+    def accuracy(self, y_hat, y):
+        """计算预测正确的数量"""
+        cmp = y_hat == y
+        return float(cmp.sum())
+        
+
+    # def evaluate_accuracy(self, net, data_iter):  # training: data_iter:  9 x 1     testing: data_iter: 10 x 1 
+    #     """验证时，计算在指定数据集上模型的精度"""
+    #     if isinstance(net, torch.nn.Module):
+    #         net.eval()
+    #     metric = Accumulator(2)
+    #     for step, data_point in enumerate(data_iter):
+    #         X, y = data_point[:, 0:8], data_point[:, 9]    # X shape: 100 x 8,  y shape: 100 x 1
+    #         output = self.forward(X.float())                       # output shape: 100 x 1
+
+    #         index_s = heapq.nsmallest(100, output)
+    #         index_sort = map(index_s.index, index_s)
+    #         metric.add(self.accuracy(index_sort, y), y.numel())
+        
+    #     return metric[0] / metric[1] 
 
         
 if __name__ == '__main__':
 
-    network = NN_particle_filter(init_weights=True)
+    network  = NN_particle_filter(init_weights=True)
     use_cuda = True
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     loss_function = nn.MSELoss()
-    optimizer = torch.optim.SGD(network.parameters(), lr=0.002)
+    optimizer     = torch.optim.SGD(network.parameters(), lr=0.002)
 
-    kwargs = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
-    dataset_1 = ExampleDataset()
-    dataLoader = torch.utils.data.DataLoader(dataset=dataset_1, shuffle=True, batch_size=30)   # 每次送入的数据是10 x 707, 10指的是batch size, 
+    kwargs        = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
+    dataset_1     = ExampleDataset()
+    dataLoader    = torch.utils.data.DataLoader(dataset=dataset_1, shuffle=True, batch_size=30)   # 每次送入的数据是10 x 707, 10指的是batch size, 
                                                                                                # 707指的是数据的维度
     i = 0
-    loss_list = []                                                                                           
-    save_path   = './NN_particles_filter.pth'
-    beat_acc    = 0.0
+    loss_list     = []                                                                                           
+    save_path     = './NN_particles_filter.pth'
+    beat_acc      = 0.0
 
-    for epoch in range(30):
+    for epoch in range(10):   # 对全部样本进行30次遍历
         network.train()
         running_loss = 0.0
 
         for step, datapoint in enumerate(dataLoader):              # datapoint 的shape是(10, 707)
-            data, label = datapoint[:, 0:6], datapoint[:, 6]
+            data, label = datapoint[:, 0:8], datapoint[:, 8]
             data = data.float()
             label = label.float()
             optimizer.zero_grad()                                  # 清除历史梯度
             outputs = network.forward(data.to(device))
+            print(outputs)
+            time.sleep(4)
 
             loss = loss_function(outputs, label.to(device))
             loss.backward()
@@ -207,9 +138,9 @@ if __name__ == '__main__':
             print("\rtrain loss: {:^3.0f}%[{}->{}]{:.3f}".format(int(rate * 100), a, b, loss), end="")
             i = i + 1
 
-    torch.save(network.state_dict(), 'parameter.pkl')
+    torch.save(network.state_dict(), 'parameter_3.pkl')
 
     loss_save = np.array(loss_list)
-    np.save('./loss_save.npy', loss_save)
+    np.save('./loss_save_2.npy', loss_save)
             
 
